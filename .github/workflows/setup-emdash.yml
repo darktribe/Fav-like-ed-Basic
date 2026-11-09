@@ -185,4 +185,4 @@ jobs:
             echo "- **サイトURL**: [$DEPLOYED_URL]($DEPLOYED_URL)" >> $GITHUB_STEP_SUMMARY
             echo "- **管理画面URL**: [$DEPLOYED_URL/_emdash/admin]($DEPLOYED_URL/_emdash/admin)" >> $GITHUB_STEP_SUMMARY
           fi
-          echo "- 続けて左メニューの **「Deploy fav-like-ed to Cloudflare Workers」** を実行すると、自動同期がスタートします。" >> $GITHUB_STEP_SUMMARY
+          echo "- 続けて **「Deploy fav-like-ed to Cloudflare Workers」** を実行してください。`EmDash site name` にはこのActionで指定した `site_name` と同じ値を入力します（初期値: `fav-like-ed`）。URLのSecret登録は不要です。" >> $GITHUB_STEP_SUMMARY
