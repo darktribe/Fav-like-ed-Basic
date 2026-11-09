@@ -1,0 +1,188 @@
+name: "1. Setup EmDash & R2/D1 (初回サイト構築)"
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+on:
+  workflow_dispatch:
+    inputs:
+      site_name:
+        description: "Cloudflare上に作成するEmDashサイト名 (URLの一部になります)"
+        required: false
+        default: "fav-like-ed"
+      site_title:
+        description: "サイトの表示タイトル"
+        required: false
+        default: "Favo / Like Log"
+      site_subtitle:
+        description: "サイトのサブタイトル（説明文）"
+        required: false
+        default: "X Likes, Reposts, and Quotes archived with EmDash"
+      d1_name:
+        description: "作成するCloudflare D1データベース名"
+        required: false
+        default: "fav-like-db"
+      r2_bucket:
+        description: "作成するCloudflare R2バケット名（画像・動画保存用）"
+        required: false
+        default: "fav-like-media"
+
+jobs:
+  setup-emdash:
+    runs-on: ubuntu-24.04
+    name: Provision R2 + D1 & Deploy EmDash Site
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install Wrangler
+        run: |
+          if [ ! -f "wrangler.toml" ]; then
+            for d in */; do
+              if [ "$d" != "emdash-site/" ] && [ -f "${d}wrangler.toml" ]; then cd "$d"; break; fi
+            done
+          fi
+          npm install
+
+      - name: Provision Cloudflare R2 Bucket & D1 Database & Deploy EmDash Site
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SITE_NAME: ${{ github.event.inputs.site_name || 'fav-like-ed' }}
+          SITE_TITLE: ${{ github.event.inputs.site_title || 'Favo / Like Log' }}
+          SITE_SUBTITLE: ${{ github.event.inputs.site_subtitle || 'X Likes, Reposts, and Quotes archived with EmDash' }}
+          D1_NAME: ${{ github.event.inputs.d1_name || 'fav-like-db' }}
+          R2_BUCKET: ${{ github.event.inputs.r2_bucket || 'fav-like-media' }}
+          TRIGGER_SECRET: ${{ secrets.TRIGGER_SECRET }}
+        run: |
+          if [ ! -f "wrangler.toml" ]; then
+            for d in */; do
+              if [ "$d" != "emdash-site/" ] && [ -f "${d}wrangler.toml" ]; then cd "$d"; break; fi
+            done
+          fi
+
+          # R2 バケット作成（既存の場合はスキップ）
+          npx wrangler r2 bucket create "$R2_BUCKET" || true
+
+          node -e '
+            const fs = require("fs");
+            const token = (process.env.CLOUDFLARE_API_TOKEN || "").trim();
+            const accountId = (process.env.CLOUDFLARE_ACCOUNT_ID || "").trim();
+            const d1Name = (process.env.D1_NAME || "fav-like-db").trim();
+            const r2Bucket = (process.env.R2_BUCKET || "fav-like-media").trim();
+            const siteName = (process.env.SITE_NAME || "fav-like-ed").trim();
+            const siteTitle = process.env.SITE_TITLE || "Favo / Like Log";
+            const siteSubtitle = process.env.SITE_SUBTITLE || "";
+
+            if (!token || !accountId) {
+              console.error("❌ GitHub Secrets に CLOUDFLARE_API_TOKEN または CLOUDFLARE_ACCOUNT_ID が設定されていません。");
+              process.exit(1);
+            }
+
+            const headers = {
+              "Authorization": `Bearer ${token}`,
+              "Content-Type": "application/json"
+            };
+
+            async function main() {
+              // 1. R2 バケットの確認（未作成ならAPIでも試行）
+              const r2Check = await fetch(
+                `https://api.cloudflare.com/client/v4/accounts/${accountId}/r2/buckets/${encodeURIComponent(r2Bucket)}`,
+                { method: "GET", headers }
+              );
+              if (!r2Check.ok) {
+                await fetch(
+                  `https://api.cloudflare.com/client/v4/accounts/${accountId}/r2/buckets`,
+                  { method: "POST", headers, body: JSON.stringify({ name: r2Bucket }) }
+                );
+              }
+
+              // 2. D1 データベースの確認・自動作成
+              console.log(`🗄️ Checking D1 Database: ${d1Name}...`);
+              const d1ListRes = await fetch(
+                `https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database?name=${encodeURIComponent(d1Name)}`,
+                { method: "GET", headers }
+              );
+              const d1ListJson = await d1ListRes.json();
+              let dbObj = (d1ListJson.result || []).find((d) => d.name === d1Name);
+              if (!dbObj || !dbObj.uuid) {
+                console.log(`🌀 Creating D1 Database "${d1Name}"...`);
+                const d1CreateRes = await fetch(
+                  `https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database`,
+                  { method: "POST", headers, body: JSON.stringify({ name: d1Name }) }
+                );
+                const d1CreateJson = await d1CreateRes.json();
+                dbObj = d1CreateJson.result;
+              }
+
+              if (!dbObj || !dbObj.uuid) {
+                throw new Error(`D1データベース "${d1Name}" のUUIDを取得できませんでした: ${JSON.stringify(d1ListJson)}`);
+              }
+              console.log(`✨ D1 Database "${d1Name}" ready (ID: ${dbObj.uuid}).`);
+
+              // 3. emdash-site/src/worker.js があればそちら、なければルートの src/worker.js を使用
+              const mainEntry = fs.existsSync("emdash-site/src/worker.js")
+                ? "emdash-site/src/worker.js"
+                : "src/worker.js";
+
+              const tomlContent = [
+                `name = ${JSON.stringify(siteName)}`,
+                `main = ${JSON.stringify(mainEntry)}`,
+                `compatibility_date = "2024-11-01"`,
+                ``,
+                `[vars]`,
+                `SITE_TITLE = ${JSON.stringify(siteTitle)}`,
+                `SITE_SUBTITLE = ${JSON.stringify(siteSubtitle)}`,
+                `TIMEZONE = "Asia/Tokyo"`,
+                `POSTS_PER_PAGE = "7"`,
+                ``,
+                `[[d1_databases]]`,
+                `binding = "DB"`,
+                `database_name = ${JSON.stringify(d1Name)}`,
+                `database_id = ${JSON.stringify(dbObj.uuid)}`,
+                ``,
+                `[[r2_buckets]]`,
+                `binding = "MEDIA"`,
+                `bucket_name = ${JSON.stringify(r2Bucket)}`,
+                ``
+              ].join("\n");
+
+              fs.writeFileSync("wrangler.emdash.toml", tomlContent);
+              console.log(`✅ Generated wrangler.emdash.toml (main: ${mainEntry}).`);
+            }
+
+            main().catch((err) => {
+              console.error(err);
+              process.exit(1);
+            });
+          '
+
+          if [ -f "emdash-site/schema.sql" ]; then
+            npx wrangler d1 execute "$D1_NAME" --remote --file=emdash-site/schema.sql --config=wrangler.emdash.toml || true
+          fi
+
+          npx wrangler deploy --config=wrangler.emdash.toml | tee deploy.log
+
+          if [ -n "$TRIGGER_SECRET" ]; then
+            node -e '
+              const fs = require("fs");
+              fs.writeFileSync(".cf-secrets.json", JSON.stringify({ TRIGGER_SECRET: process.env.TRIGGER_SECRET.trim() }));
+            '
+            npx wrangler secret bulk .cf-secrets.json --config=wrangler.emdash.toml
+            rm -f .cf-secrets.json
+          fi
+
+          rm -f wrangler.emdash.toml
+
+          DEPLOYED_URL=$(grep -Eo 'https://[a-zA-Z0-9._-]+\.workers\.dev' deploy.log | head -n 1 || true)
+          echo "### 🎉 EmDash + R2 + D1 の自動構築が完了しました！" >> $GITHUB_STEP_SUMMARY
+          if [ -n "$DEPLOYED_URL" ]; then
+            echo "- **サイトURL**: [$DEPLOYED_URL]($DEPLOYED_URL)" >> $GITHUB_STEP_SUMMARY
+            echo "- **管理画面URL**: [$DEPLOYED_URL/_emdash/admin]($DEPLOYED_URL/_emdash/admin)" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "- 続けて左メニューの **「Deploy fav-like-ed to Cloudflare Workers」** を実行すると、自動同期がスタートします。" >> $GITHUB_STEP_SUMMARY
