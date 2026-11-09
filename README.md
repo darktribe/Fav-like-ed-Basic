@@ -33,7 +33,6 @@ EmDash サイト本体と同期 Worker は別々にデプロイします。WordP
 
 | Secret | 内容 |
 |---|---|
-| `EMDASH_URL` | セットアップActionで作成したEmDashサイトのURL（例: `https://emdash-xlog.example.workers.dev`） |
 | `TRIGGER_SECRET` | 任意の十分に長いランダムな文字列。同期Workerの `/trigger` とEmDash APIを保護するため、**両方のActionで同じ値**を使用 |
 | `GH_SYNC_TOKEN` | 任意。MarkdownをGitHubへ保存する場合のPersonal Access Token |
 | `GH_SYNC_REPO` | 任意。Markdown保存先（例: `owner/repository`） |
@@ -41,14 +40,13 @@ EmDash サイト本体と同期 Worker は別々にデプロイします。WordP
 ## 2. EmDash サイトを作成
 
 1. Actions から **1. Setup EmDash & R2/D1 (初回サイト構築)** を実行します。
-2. 実行結果の Summary に表示される EmDash サイトURLをコピーします。
-3. コピーしたURLを GitHub Secret `EMDASH_URL` に登録します。
+2. 実行結果の Summary にEmDashサイトURLが表示されます。URLのSecret登録は不要です。同期WorkerのデプロイActionがCloudflareの `workers.dev` サブドメインからURLを自動生成します。
 
 このActionは EmDash サイトをデプロイし、D1データベースとR2バケットを作成します。サイトのAPIを保護する場合は、実行前に `TRIGGER_SECRET` を登録してください。
 
 ## 3. favo-like Worker をデプロイ
 
-Actions から **Deploy fav-like-ed to Cloudflare Workers** を実行します。初回のデプロイとSecrets変更後は、このActionを再実行してください。
+Actions から **Deploy fav-like-ed to Cloudflare Workers** を実行します。`EmDash site name` はセットアップActionの `site_name` と同じ値にしてください（両方の初期値は `fav-like-ed`）。初回のデプロイとSecrets変更後は、このActionを再実行してください。
 
 `workflow_dispatch` の入力で Cron 間隔（分）、取得対象（Likes / RT / Quotes）、GitHub Markdown出力対象を設定できます。Cronの初期値は15分間隔、X APIからの取得件数は有効な対象ごとに最新5件です。画像が多い場合はWorkerのサブリクエスト数が増えるため、まずは初期値で動作を確認してください。定期取得を使わず、手動で実行する場合はデプロイ後に次のように呼び出します。
 
